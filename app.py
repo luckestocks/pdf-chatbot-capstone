@@ -196,10 +196,19 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         model="llama-3.1-8b-instant",
         messages=[
             {"role": "system",
-             "content": ("You are a strict document QA assistant. "
-                         "Answer only from the provided context. "
-                         "If the answer is not present, say so clearly. "
-                         "Never invent or assume facts.")},
+             "content": (
+                "You are a document QA assistant. "
+                "Always try to answer from the provided context first. "
+                "If the context contains a clear answer, use it. "
+                "If the context is unclear, garbled, or contains only mathematical notation "
+                "with no readable answer, you may use your general knowledge to answer "
+                "basic definitional questions (e.g. what an acronym stands for, "
+                "what a well-known concept means). "
+                "When using general knowledge, add one sentence at the end: "
+                "'(Note: answered from general knowledge as the document did not contain a clear definition.) ' "
+                "Never hallucinate specific claims, numbers, or results — "
+                "those must always come from the document context."
+             )},
             {"role": "user", "content": prompt},
         ],
         temperature=0.0,
