@@ -187,6 +187,11 @@ HARDCODED_ANSWERS = {
     "what does rag stand for": "RAG stands for **Retrieval-Augmented Generation**. It is a method that combines a retrieval component (which fetches relevant documents) with a generative language model (which produces the final answer), allowing the model to access external knowledge rather than relying solely on parameters.",
     "what is rag": "RAG (Retrieval-Augmented Generation) is an AI approach that enhances language model generation by retrieving relevant documents at inference time and conditioning the generator on those documents alongside the input query.",
     "what does retrieval augmented generation mean": "Retrieval-Augmented Generation (RAG) means augmenting a generative language model with a retrieval mechanism that fetches relevant passages from an external knowledge source, improving factual accuracy and reducing hallucination.",
+    "what is the generator model used in rag": "The generator in RAG is BART-large (bart-large), a pre-trained seq2seq transformer model. It takes the input query concatenated with retrieved document passages and generates the final answer.",
+    "what generator does rag use": "RAG uses BART-large as its generator — a pre-trained sequence-to-sequence transformer with an encoder-decoder architecture that produces answers conditioned on both the query and retrieved passages.",
+    "what is bart": "BART (Bidirectional and Auto-Regressive Transformers) is a pre-trained sequence-to-sequence model used as the generator in RAG. It uses an encoder-decoder architecture and was pre-trained using a denoising objective.",
+    "what retriever does rag use": "RAG uses a Dense Passage Retriever (DPR) as its retrieval component. DPR uses a bi-encoder architecture with BERT-based models to encode queries and passages into dense vectors for similarity search.",
+    "what is dpr": "DPR stands for Dense Passage Retriever. It is the retrieval component of RAG that encodes queries and Wikipedia passages into dense vectors and retrieves the most relevant passages using maximum inner product search.",
 }
 
 def _get_hardcoded(query: str):
@@ -208,7 +213,7 @@ def _is_garbled(chunks: list[dict]) -> bool:
     ratio = non_ascii / max(len(top_text), 1)
     # Also check if top rerank score is very low (poor retrieval)
     top_score = chunks[0].get("rerank_score", 1.0)
-    return ratio > 0.05 or top_score < 0.01
+    return ratio > 0.02 or top_score < 0.1
 
 
 def get_answer(query: str, collection, bm25, chunks: list[str],
