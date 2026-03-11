@@ -37,3 +37,12 @@ Upgraded performance:
 - Method: hybrid + reranker
 - Avg latency: ~1.7s
 - Retrieval: BM25 + ChromaDB merged, reranked by cross-encoder
+
+## Phase 4 — Cells 19-21 — ✅ Complete
+Answer cache with Drive persistence, debug logger, wired into pipeline
+
+Performance:
+- Cache miss: ~1.33s
+- Cache hit: 0.0s (instant)
+- Case normalisation working — lowercase matches uppercase
+- Log file: chatbot_20260311.log saved to Drive
