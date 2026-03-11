@@ -53,3 +53,11 @@ Graceful fallback implemented. Functions ready for report-style PDFs
 in Phase 7 Streamlit UI.
 - Case normalisation working — lowercase matches uppercase
 - Log file: chatbot_20260311.log saved to Drive
+
+## Phase 6 — Cells 24-26 — ✅ Complete
+RAGAS evaluation on 10 Q&A pairs.
+Faithfulness: 0.686 (Good) | Answer Relevancy: 0.886 (Excellent)
+3 anti-hallucination fixes applied — Q1 hallucination eliminated.
+Low scorers: Q1 (BM25 acronym issue), Q4/Q6 (math notation in chunks).
+Answer Relevancy calculated via cosine similarity — RAGAS built-in
+metric incompatible with Groq free tier rate limits (documented).
