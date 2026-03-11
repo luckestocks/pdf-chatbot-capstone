@@ -179,6 +179,19 @@ QUESTION: {query}
 ANSWER:"""
 
 
+def _is_garbled(chunks: list[dict]) -> bool:
+    """Return True if the top chunk is mostly garbled/math content."""
+    if not chunks:
+        return True
+    top_text = chunks[0].get("text", "")
+    # Count non-ASCII characters (math symbols, etc.)
+    non_ascii = sum(1 for c in top_text if ord(c) > 127)
+    ratio = non_ascii / max(len(top_text), 1)
+    # Also check if top rerank score is very low (poor retrieval)
+    top_score = chunks[0].get("rerank_score", 1.0)
+    return ratio > 0.05 or top_score < 0.01
+
+
 def get_answer(query: str, collection, bm25, chunks: list[str],
                embed_model, reranker, answer_cache: dict) -> dict:
     """Full pipeline: cache check → hybrid retrieve → rerank → LLM answer."""
@@ -188,64 +201,48 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         cached["from_cache"] = True
         return cached
 
-    t0            = time.time()
-    retrieved     = full_hybrid_retrieve(query, collection, bm25, chunks, embed_model, reranker)
-    prompt        = build_prompt(query, retrieved)
+    t0        = time.time()
+    retrieved = full_hybrid_retrieve(query, collection, bm25, chunks, embed_model, reranker)
 
-    response = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system",
-             "content": (
-                "You are a document QA assistant. "
-                "Always try to answer from the provided context first. "
-                "If the context contains a clear answer, use it. "
-                "If the context is unclear, garbled, or contains only mathematical notation "
-                "with no readable answer, you may use your general knowledge to answer "
-                "basic definitional questions (e.g. what an acronym stands for, "
-                "what a well-known concept means). "
-                "When using general knowledge, add one sentence at the end: "
-                "'(Note: answered from general knowledge as the document did not contain a clear definition.) ' "
-                "Never hallucinate specific claims, numbers, or results — "
-                "those must always come from the document context."
-             )},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.0,
-        max_tokens=512,
-    )
+    # ── Garbled chunk detection: skip document context if chunks are unusable ─
+    if _is_garbled(retrieved):
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system",
+                 "content": (
+                    "You are a helpful assistant. Answer clearly and concisely "
+                    "in 2-4 sentences. Give a direct, accurate answer."
+                 )},
+                {"role": "user", "content": query},
+            ],
+            temperature=0.0,
+            max_tokens=200,
+        )
+        answer = response.choices[0].message.content.strip()
+        answer += "\n\n*(Note: answered from general knowledge — the relevant document section contained mathematical notation that could not be parsed.)*"
+    else:
+        # ── Normal path: answer from document context ─────────────────────────
+        prompt = build_prompt(query, retrieved)
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system",
+                 "content": (
+                    "You are a strict document QA assistant. "
+                    "Answer only from the provided context. "
+                    "If the answer is not present, say so clearly. "
+                    "Never invent or assume facts. "
+                    "Keep your answer concise — maximum 4 sentences."
+                 )},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=300,
+        )
+        answer = response.choices[0].message.content.strip()
 
-    answer  = response.choices[0].message.content.strip()
     latency = round(time.time() - t0, 2)
-
-    # ── Repetition detection ─────────────────────────────────────────────────
-    # If the model loops (same sentence repeated 3+ times), it means the
-    # retrieved chunks were too garbled to produce a coherent answer.
-    # Fall back to a clean general-knowledge answer for basic definitions.
-    sentences = [s.strip() for s in answer.split(".") if s.strip()]
-    if len(sentences) >= 6:
-        unique = set(sentences)
-        repetition_ratio = 1 - (len(unique) / len(sentences))
-        if repetition_ratio > 0.4:
-            # Re-ask without document context for this query
-            fallback = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[
-                    {"role": "system",
-                     "content": (
-                        "You are a helpful assistant. Answer the question clearly "
-                        "and concisely in 2-3 sentences using your general knowledge. "
-                        "This question is about a research topic — give a direct, accurate answer."
-                     )},
-                    {"role": "user", "content": query},
-                ],
-                temperature=0.0,
-                max_tokens=150,
-            )
-            answer = fallback.choices[0].message.content.strip()
-            answer += "\n\n*(Note: answered from general knowledge — the document chunks for this query contained only mathematical notation.)*"
-    # ─────────────────────────────────────────────────────────────────────────
-
     result = {
         "answer":     answer,
         "chunks":     retrieved,
