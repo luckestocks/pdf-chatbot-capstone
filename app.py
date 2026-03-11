@@ -135,8 +135,9 @@ def bm25_retrieve(query: str, bm25, chunks: list[str], top_k: int = 6) -> list[d
 
 
 def hybrid_search(query: str, collection, bm25, chunks: list[str],
-                  embed_model, top_k: int = 6) -> list[dict]:
-    """Merge semantic + BM25 results (deduped by text)."""
+                  embed_model, top_k: int = 10) -> list[dict]:
+    """Merge semantic + BM25 results (deduped by text).
+    Larger candidate pool = better chance of finding the right chunk."""
     semantic = retrieve_chunks(query, collection, embed_model, top_k)
     keyword  = bm25_retrieve(query, bm25, chunks, top_k)
     seen, merged = set(), []
@@ -149,9 +150,10 @@ def hybrid_search(query: str, collection, bm25, chunks: list[str],
 
 
 def full_hybrid_retrieve(query: str, collection, bm25, chunks: list[str],
-                         embed_model, reranker, top_k: int = 4) -> list[dict]:
-    """Hybrid search → CrossEncoder reranking → top_k results."""
-    candidates = hybrid_search(query, collection, bm25, chunks, embed_model, top_k=6)
+                         embed_model, reranker, top_k: int = 5) -> list[dict]:
+    """Hybrid search → CrossEncoder reranking → top_k results.
+    Pulls 10+10 candidates, reranks all, returns best 5."""
+    candidates = hybrid_search(query, collection, bm25, chunks, embed_model, top_k=10)
     pairs      = [[query, c["text"]] for c in candidates]
     scores     = reranker.predict(pairs)
     for i, c in enumerate(candidates):
@@ -267,10 +269,12 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
                 {"role": "system",
                  "content": (
                     "You are a strict document QA assistant. "
-                    "Answer only from the provided context. "
-                    "If the answer is not present, say so clearly. "
+                    "Answer only from the provided context chunks. "
+                    "Read ALL chunks carefully before answering — "
+                    "the answer may be spread across multiple chunks. "
+                    "If the answer is not present in any chunk, say so clearly. "
                     "Never invent or assume facts. "
-                    "Keep your answer concise — maximum 4 sentences."
+                    "Keep your answer concise and direct."
                  )},
                 {"role": "user", "content": prompt},
             ],
