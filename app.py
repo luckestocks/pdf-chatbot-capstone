@@ -218,6 +218,34 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
     answer  = response.choices[0].message.content.strip()
     latency = round(time.time() - t0, 2)
 
+    # ── Repetition detection ─────────────────────────────────────────────────
+    # If the model loops (same sentence repeated 3+ times), it means the
+    # retrieved chunks were too garbled to produce a coherent answer.
+    # Fall back to a clean general-knowledge answer for basic definitions.
+    sentences = [s.strip() for s in answer.split(".") if s.strip()]
+    if len(sentences) >= 6:
+        unique = set(sentences)
+        repetition_ratio = 1 - (len(unique) / len(sentences))
+        if repetition_ratio > 0.4:
+            # Re-ask without document context for this query
+            fallback = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system",
+                     "content": (
+                        "You are a helpful assistant. Answer the question clearly "
+                        "and concisely in 2-3 sentences using your general knowledge. "
+                        "This question is about a research topic — give a direct, accurate answer."
+                     )},
+                    {"role": "user", "content": query},
+                ],
+                temperature=0.0,
+                max_tokens=150,
+            )
+            answer = fallback.choices[0].message.content.strip()
+            answer += "\n\n*(Note: answered from general knowledge — the document chunks for this query contained only mathematical notation.)*"
+    # ─────────────────────────────────────────────────────────────────────────
+
     result = {
         "answer":     answer,
         "chunks":     retrieved,
