@@ -26,3 +26,14 @@ Retrieval, prompt building, Llama-3.1 integration
 
 ## Next Up
 - Phase 3: Hybrid Search + Reranker + Conditional Query Expansion
+
+## Phase 3 — Cells 15-18 — ✅ Complete
+BM25 keyword search, hybrid merge, cross-encoder reranker
+
+Key fix: build_prompt() updated to handle both
+confidence (semantic) and rerank_score (hybrid) keys
+
+Upgraded performance:
+- Method: hybrid + reranker
+- Avg latency: ~1.7s
+- Retrieval: BM25 + ChromaDB merged, reranked by cross-encoder
