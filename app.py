@@ -22,7 +22,7 @@ st.set_page_config(
 # ─── API KEY — Replace this string with your actual Groq key ─────────────────
 # ⚠️  TO USE st.secrets INSTEAD (recommended for production):
 #     1. In Streamlit Cloud → App Settings → Secrets, add:
-#           GROQ_API_KEY = "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"
+#           GROQ_API_KEY = "gsk_your_key_here"
 #     2. Change the line below to:
 #           GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 GROQ_API_KEY = "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"   # <── PASTE YOUR KEY HERE
@@ -59,6 +59,22 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ─── Pipeline Functions ───────────────────────────────────────────────────────
 
+def clean_text(text: str) -> str:
+    """Remove garbled unicode, math symbols, and noise from PDF text."""
+    import re
+    # Replace common garbled characters and math symbols
+    text = text.encode("utf-8", errors="ignore").decode("utf-8")
+    # Remove non-printable / control characters
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Remove isolated unicode math/symbol characters (not regular letters/numbers)
+    text = re.sub(r'[^\x20-\x7E\n\t]', ' ', text)
+    # Collapse multiple spaces
+    text = re.sub(r' {2,}', ' ', text)
+    # Collapse 3+ newlines into 2
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 def extract_text_from_pdf(uploaded_file) -> tuple[str, int]:
     """Extract all text from an uploaded PDF. Returns (text, page_count)."""
     reader = PyPDF2.PdfReader(uploaded_file)
@@ -66,7 +82,7 @@ def extract_text_from_pdf(uploaded_file) -> tuple[str, int]:
     for page in reader.pages:
         text = page.extract_text()
         if text:
-            pages.append(text)
+            pages.append(clean_text(text))
     return "\n\n".join(pages), len(reader.pages)
 
 
@@ -287,7 +303,7 @@ if not st.session_state.pdf_loaded:
     st.stop()
 
 # Chat history
-for msg in st.session_state.messages:
+for msg_idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
@@ -311,7 +327,7 @@ for msg in st.session_state.messages:
                         label="",
                         value=chunk["text"],
                         height=120,
-                        key=f"chunk_{len(st.session_state.messages)}_{i}",
+                        key=f"hist_chunk_{msg_idx}_{i}",
                         disabled=True,
                     )
 
@@ -355,7 +371,7 @@ if prompt := st.chat_input("Ask a question about your PDF…"):
                     label="",
                     value=chunk["text"],
                     height=120,
-                    key=f"new_chunk_{i}",
+                    key=f"new_chunk_{len(st.session_state.messages)}_{i}",
                     disabled=True,
                 )
 
