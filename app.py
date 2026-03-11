@@ -25,7 +25,7 @@ st.set_page_config(
 #           GROQ_API_KEY = "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"
 #     2. Change the line below to:
 #           GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-GROQ_API_KEY = "gsk_YOUR_GROQ_API_KEY_HERE"   # <── PASTE YOUR KEY HERE
+GROQ_API_KEY = "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"   # <── PASTE YOUR KEY HERE
 # ─────────────────────────────────────────────────────────────────────────────
 
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
