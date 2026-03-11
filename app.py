@@ -167,9 +167,9 @@ def build_prompt(query: str, chunks: list[dict]) -> str:
         score = c.get("rerank_score", c.get("confidence", 0.0))
         context_parts.append(f"[Chunk {i+1} | score={score:.3f}]\n{c['text']}")
     context = "\n\n---\n\n".join(context_parts)
-    return f"""You are a precise document assistant. Answer ONLY from the context below.
-If the answer is not in the context, say "I could not find that information in the document."
-Do NOT invent facts. Do NOT reference external knowledge.
+    return f"""Use the context below to answer the question.
+If the context contains a clear answer, use it.
+If the context is garbled or contains only math with no readable answer, use general knowledge for basic definitions only.
 
 CONTEXT:
 {context}
