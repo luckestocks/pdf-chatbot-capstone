@@ -247,16 +247,34 @@ def web_search_fallback(query: str) -> str:
     """Search the web using DuckDuckGo and summarise results via Groq."""
     try:
         from duckduckgo_search import DDGS
-        # Make the query more specific for better web results
-        # Add "what is" if not already a clear question, keep it concise
         search_query = query.strip()
-        # Append "explained" for short topic queries to get tutorial-style results
-        if len(search_query.split()) <= 6 and "?" not in search_query:
-            search_query = search_query + " explained"
-        with DDGS() as ddgs:
-            results = list(ddgs.text(search_query, max_results=5))
+        results = []
+        # Try multiple times with slightly different queries if needed
+        for attempt_query in [search_query, search_query + " explained", search_query + " tutorial"]:
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(attempt_query, max_results=5, timeout=10))
+                if results:
+                    break
+            except Exception:
+                continue
+
         if not results:
-            return None
+            # No results from DuckDuckGo — use Groq general knowledge directly
+            response = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system",
+                     "content": "You are a helpful assistant with broad knowledge. Answer clearly and concisely in 3-5 sentences."},
+                    {"role": "user", "content": query},
+                ],
+                temperature=0.0,
+                max_tokens=300,
+            )
+            answer = response.choices[0].message.content.strip()
+            answer += "\n\n---\n💡 **Answered from general knowledge** — not found in the uploaded document."
+            return answer
+
         # Build context from search results
         web_context = ""
         sources = []
@@ -267,7 +285,8 @@ def web_search_fallback(query: str) -> str:
             web_context += f"[Source {i+1}] {title}\n{body}\n\n"
             if href:
                 sources.append(f"- {title}: {href}")
-        # Ask Groq to summarise
+
+        # Ask Groq to summarise the web results
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
@@ -288,8 +307,25 @@ def web_search_fallback(query: str) -> str:
         source_text = "\n".join(sources[:3])
         answer += f"\n\n---\n🌐 **Answered from web search** — not found in the uploaded document.\n\n**Sources:**\n{source_text}"
         return answer
+
     except Exception as e:
-        return None
+        # Last resort — use Groq general knowledge with no web context
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system",
+                     "content": "You are a helpful assistant. Answer clearly and concisely in 3-5 sentences using your general knowledge."},
+                    {"role": "user", "content": query},
+                ],
+                temperature=0.0,
+                max_tokens=300,
+            )
+            answer = response.choices[0].message.content.strip()
+            answer += "\n\n---\n💡 **Answered from general knowledge** — not found in the uploaded document."
+            return answer
+        except Exception:
+            return None
 
 
 def get_answer(query: str, collection, bm25, chunks: list[str],
