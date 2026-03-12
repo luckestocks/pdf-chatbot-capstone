@@ -25,7 +25,7 @@ st.set_page_config(
 #           GROQ_API_KEY = "gsk_your_key_here"
 #     2. Change the line below to:
 #           GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-GROQ_API_KEY = "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"   # <── PASTE YOUR KEY HERE
+GROQ_API_KEY = "gsk_YOUR_GROQ_API_KEY_HERE"   # <── PASTE YOUR KEY HERE
 # ─────────────────────────────────────────────────────────────────────────────
 
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
@@ -226,11 +226,18 @@ def _answer_says_not_found(answer: str) -> bool:
         "not present in",
         "not explicitly",
         "does not contain",
+        "not contain a clear answer",
         "not mentioned",
         "no information",
         "cannot find",
         "not provided",
         "not available in",
+        "does not provide",
+        "no clear answer",
+        "unable to find",
+        "not included in",
+        "not covered in",
+        "not directly addressed",
     ]
     answer_lower = answer.lower()
     return any(p in answer_lower for p in phrases)
@@ -240,8 +247,14 @@ def web_search_fallback(query: str) -> str:
     """Search the web using DuckDuckGo and summarise results via Groq."""
     try:
         from duckduckgo_search import DDGS
+        # Make the query more specific for better web results
+        # Add "what is" if not already a clear question, keep it concise
+        search_query = query.strip()
+        # Append "explained" for short topic queries to get tutorial-style results
+        if len(search_query.split()) <= 6 and "?" not in search_query:
+            search_query = search_query + " explained"
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+            results = list(ddgs.text(search_query, max_results=5))
         if not results:
             return None
         # Build context from search results
