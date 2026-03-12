@@ -223,7 +223,8 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
     """Full pipeline: cache check → hybrid retrieve → rerank → LLM answer."""
     cache_key = hashlib.md5(query.strip().lower().encode()).hexdigest()
     if cache_key in answer_cache:
-        cached = answer_cache[cache_key]
+        # Return a copy so we don't mutate the stored dict
+        cached = dict(answer_cache[cache_key])
         cached["from_cache"] = True
         return cached
 
