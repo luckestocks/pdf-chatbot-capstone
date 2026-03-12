@@ -218,6 +218,67 @@ def _is_garbled(chunks: list[dict]) -> bool:
     return ratio > 0.02 or top_score < 0.1
 
 
+def _answer_says_not_found(answer: str) -> bool:
+    """Detect if the LLM answered that it could not find the information."""
+    phrases = [
+        "could not find",
+        "not find that information",
+        "not present in",
+        "not explicitly",
+        "does not contain",
+        "not mentioned",
+        "no information",
+        "cannot find",
+        "not provided",
+        "not available in",
+    ]
+    answer_lower = answer.lower()
+    return any(p in answer_lower for p in phrases)
+
+
+def web_search_fallback(query: str) -> str:
+    """Search the web using DuckDuckGo and summarise results via Groq."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+        if not results:
+            return None
+        # Build context from search results
+        web_context = ""
+        sources = []
+        for i, r in enumerate(results[:5]):
+            title = r.get("title", "")
+            body  = r.get("body", "")
+            href  = r.get("href", "")
+            web_context += f"[Source {i+1}] {title}\n{body}\n\n"
+            if href:
+                sources.append(f"- {title}: {href}")
+        # Ask Groq to summarise
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system",
+                 "content": (
+                    "You are a helpful assistant. "
+                    "Using only the web search results provided, answer the question clearly "
+                    "and concisely in 3-5 sentences. "
+                    "Do not invent facts beyond what the sources say."
+                 )},
+                {"role": "user",
+                 "content": f"Web search results:\n{web_context}\n\nQuestion: {query}\n\nAnswer:"},
+            ],
+            temperature=0.0,
+            max_tokens=400,
+        )
+        answer = response.choices[0].message.content.strip()
+        source_text = "\n".join(sources[:3])
+        answer += f"\n\n---\n🌐 **Answered from web search** — not found in the uploaded document.\n\n**Sources:**\n{source_text}"
+        return answer
+    except Exception as e:
+        return None
+
+
 def get_answer(query: str, collection, bm25, chunks: list[str],
                embed_model, reranker, answer_cache: dict) -> dict:
     """Full pipeline: cache check → hybrid retrieve → rerank → LLM answer."""
@@ -283,6 +344,13 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
             max_tokens=300,
         )
         answer = response.choices[0].message.content.strip()
+
+    # ── Web search fallback ───────────────────────────────────────────────────
+    # If the document didn't contain a good answer, search the web instead
+    if _answer_says_not_found(answer):
+        web_answer = web_search_fallback(query)
+        if web_answer:
+            answer = web_answer
 
     latency = round(time.time() - t0, 2)
     result = {
