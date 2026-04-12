@@ -1,13 +1,13 @@
-# PDF Chatbot — Phase 7 Requirements
+# PDF Chatbot - Phase 7 Requirements
 # Pinned for Streamlit Community Cloud compatibility
 
-streamlit>=1.32.0
-groq>=0.5.0
-PyPDF2>=3.0.1
-sentence-transformers>=2.7.0
-pdfplumber>=0.9.0
-rank-bm25>=0.2.2
+streamlit==1.32.0
+groq==0.5.0
+PyPDF2==3.0.1
+sentence-transformers==2.7.0
+pdfplumber==0.9.0
+rank-bm25==0.2.2
 numpy==1.26.4
-duckduckgo-search>=6.1.0
+duckduckgo-search==6.1.0
 chromadb==0.4.24
 protobuf==3.20.3
