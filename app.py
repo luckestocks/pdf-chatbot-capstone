@@ -237,6 +237,30 @@ def _answer_says_not_found(answer: str) -> bool:
     answer_lower = answer.lower()
     return any(p in answer_lower for p in phrases)
 
+def _classify_answer_type(chunks: list[dict]) -> str:
+    """
+    Classify whether the answer was pulled directly from one passage
+    or synthesised across multiple passages.
+
+    Logic:
+      - If the top chunk score is at least 1.5x higher than the average
+        of the remaining chunks → the answer likely came from one place → DIRECT
+      - Otherwise the LLM had to reason across several passages → ANALYTICAL
+
+    Returns one of: "direct" | "analytical" | "web" | "cached" | "hardcoded"
+    (web/cached/hardcoded are set by get_answer, not here)
+    """
+    if not chunks or len(chunks) < 2:
+        return "direct"
+    scores = [c.get("rerank_score", 0.0) for c in chunks]
+    top    = scores[0]
+    rest   = scores[1:]
+    avg_rest = sum(rest) / len(rest) if rest else 0.0
+    # If top score is significantly higher than the rest → direct
+    if top > 0 and avg_rest >= 0 and top >= avg_rest * 1.5:
+        return "direct"
+    return "analytical"
+
 def web_search_fallback(query: str) -> str:
     """
     Search the web using Tavily (built for AI/RAG apps) and summarise
@@ -331,10 +355,11 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
     hardcoded = _get_hardcoded(query)
     if hardcoded:
         result = {
-            "answer":     hardcoded,
-            "chunks":     [],
-            "latency":    0.0,
-            "from_cache": False,
+            "answer":      hardcoded,
+            "chunks":      [],
+            "latency":     0.0,
+            "from_cache":  False,
+            "answer_type": "hardcoded",
         }
         answer_cache[cache_key] = result
         return result
@@ -394,14 +419,37 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
                 answer = web_answer
 
     latency = round(time.time() - t0, 2)
+
+    # ── Classify answer type for UI badge ────────────────────────────────────
+    if "🌐" in answer:
+        answer_type = "web"
+    elif "💡" in answer:
+        answer_type = "general"
+    else:
+        answer_type = _classify_answer_type(retrieved)
+
     result  = {
-        "answer":     answer,
-        "chunks":     retrieved,
-        "latency":    latency,
-        "from_cache": False,
+        "answer":      answer,
+        "chunks":      retrieved,
+        "latency":     latency,
+        "from_cache":  False,
+        "answer_type": answer_type,
     }
     answer_cache[cache_key] = result
     return result
+
+# ─── Answer Type Badge ───────────────────────────────────────────────────────
+def _answer_type_badge(answer_type: str) -> str:
+    """Return a markdown badge string for the answer type."""
+    badges = {
+        "direct":     "📄 **Answered directly from document**",
+        "analytical": "🧩 **Synthesised across multiple passages**",
+        "web":        "🌐 **Answered from web search**",
+        "general":    "💡 **Answered from general knowledge**",
+        "hardcoded":  "⚡ **Known definition — answered instantly**",
+        "cached":     "⚡ **Returned from cache**",
+    }
+    return badges.get(answer_type, "")
 
 # ─── Session State Init ───────────────────────────────────────────────────────
 for key, default in {
@@ -485,6 +533,13 @@ for msg_idx, msg in enumerate(st.session_state.messages):
         st.markdown(msg["content"])
         if msg["role"] == "assistant" and "meta" in msg:
             meta = msg["meta"]
+            # ── Answer type badge ─────────────────────────────────────────
+            atype = meta.get("answer_type", "")
+            if meta.get("from_cache"):
+                atype = "cached"
+            badge = _answer_type_badge(atype)
+            if badge and "🌐" not in msg["content"] and "💡" not in msg["content"]:
+                st.caption(badge)
             col1, col2, col3 = st.columns(3)
             col1.metric("⏱️ Latency",    f"{meta['latency']}s")
             col2.metric("📦 Chunks used", meta["chunk_count"])
@@ -525,6 +580,13 @@ if prompt := st.chat_input("Ask a question about your PDF…"):
             )
 
         st.markdown(result["answer"])
+        # ── Answer type badge ─────────────────────────────────────────────────
+        atype = result.get("answer_type", "")
+        if result.get("from_cache"):
+            atype = "cached"
+        badge = _answer_type_badge(atype)
+        if badge and "🌐" not in result["answer"] and "💡" not in result["answer"]:
+            st.caption(badge)
         col1, col2, col3 = st.columns(3)
         col1.metric("⏱️ Latency",    f"{result['latency']}s")
         col2.metric("📦 Chunks used", len(result["chunks"]))
@@ -555,5 +617,6 @@ if prompt := st.chat_input("Ask a question about your PDF…"):
             "from_cache":  result["from_cache"],
             "chunk_count": len(result["chunks"]),
             "chunks":      result["chunks"],
+            "answer_type": result.get("answer_type", ""),
         },
     })
