@@ -376,8 +376,8 @@ def web_search_fallback(query: str) -> str:
 
 def _llm_judge(query: str, answer: str) -> bool:
     """
-    LLM-as-judge: evaluates whether the generated answer is complete
-    and useful for the question asked.
+    LLM-as-judge: evaluates whether the generated answer is complete,
+    useful, and plausibly correct for the question asked.
 
     Returns True if answer is GOOD, False if POOR.
 
@@ -398,9 +398,15 @@ def _llm_judge(query: str, answer: str) -> bool:
                     "content": (
                         "You are a strict answer quality evaluator. "
                         "Reply with exactly one word: GOOD or POOR. Nothing else. "
-                        "GOOD = the answer is complete, informative, and directly addresses the question. "
-                        "POOR = the answer is too short, vague, just an acronym, a single word, "
-                        "incomplete, or does not properly address the question."
+                        "GOOD = the answer is complete, informative, directly addresses the question, "
+                        "and is plausibly correct based on your general knowledge. "
+                        "POOR = any of these apply: "
+                        "the answer is too short or vague; "
+                        "it is just an acronym or single word; "
+                        "it does not address what the question asked; "
+                        "it appears factually wrong or confused — for example, "
+                        "if asked what an acronym stands for and the answer gives "
+                        "a completely different expansion than expected."
                     ),
                 },
                 {
