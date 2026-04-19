@@ -140,15 +140,17 @@ def full_hybrid_retrieve(query: str, collection, bm25, chunks: list[str],
     return ranked[:top_k]
 
 def build_prompt(query: str, chunks: list[dict]) -> str:
-    """Build the LLM prompt from retrieved chunks."""
-    context_parts = []
-    for i, c in enumerate(chunks):
-        score = c.get("rerank_score", c.get("confidence", 0.0))
-        context_parts.append(f"[Chunk {i+1} | score={score:.3f}]\n{c['text']}")
+    """Build the LLM prompt from retrieved chunks.
+    NOTE: Chunk labels intentionally removed — they caused the LLM to say
+    'According to Chunk 3...' in answers, which looks unprofessional.
+    The LLM should synthesise across all passages and answer directly.
+    """
+    context_parts = [c["text"] for c in chunks]
     context = "\n\n---\n\n".join(context_parts)
-    return f"""Use the context below to answer the question.
-If the context contains a clear answer, use it.
-If the context is garbled or contains only math with no readable answer, use general knowledge for basic definitions only.
+    return f"""Use the context passages below to answer the question.
+Read all passages carefully before answering.
+Write a clear, direct answer in your own words — do not reference passage numbers or say 'according to passage X'.
+If the answer is not present in any passage, say so clearly.
 
 CONTEXT:
 {context}
@@ -271,8 +273,10 @@ def web_search_fallback(query: str) -> str:
                     "role": "system",
                     "content": (
                         "You are a helpful assistant. "
-                        "Using only the web search results provided, answer the question clearly "
-                        "and concisely in 3-5 sentences. "
+                        "Using the web search results provided, write a clean, well-synthesised answer "
+                        "in 3-5 sentences. "
+                        "Do NOT say 'Source 1 says', 'According to Source 2', or reference sources by number. "
+                        "Just write the answer directly as a single coherent paragraph. "
                         "Do not invent facts beyond what the sources say."
                     ),
                 },
