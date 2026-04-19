@@ -374,9 +374,63 @@ def web_search_fallback(query: str) -> str:
         except Exception:
             return None
 
+def _llm_judge(query: str, answer: str) -> bool:
+    """
+    LLM-as-judge: evaluates whether the generated answer is complete
+    and useful for the question asked.
+
+    Returns True if answer is GOOD, False if POOR.
+
+    This is the runtime quality gate — complementing RAGAS which was used
+    offline during development with ground truth. The judge works dynamically
+    without needing reference answers, making it suitable for live use where
+    any document and any question can be asked.
+
+    Design: single-token response (GOOD/POOR) keeps latency minimal (~0.2s).
+    Falls back to True (pass) on any exception to avoid blocking the pipeline.
+    """
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict answer quality evaluator. "
+                        "Reply with exactly one word: GOOD or POOR. Nothing else. "
+                        "GOOD = the answer is complete, informative, and directly addresses the question. "
+                        "POOR = the answer is too short, vague, just an acronym, a single word, "
+                        "incomplete, or does not properly address the question."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Question: {query}\nAnswer: {answer}\n\nEvaluate:",
+                },
+            ],
+            temperature=0.0,
+            max_tokens=5,
+        )
+        verdict = response.choices[0].message.content.strip().upper()
+        return verdict == "GOOD"
+    except Exception:
+        return True  # fail open — don't block the pipeline
+
+
 def get_answer(query: str, collection, bm25, chunks: list[str],
                embed_model, reranker, answer_cache: dict) -> dict:
-    """Full pipeline: cache check → hybrid retrieve → rerank → LLM answer."""
+    """
+    Full pipeline:
+      cache check
+      → hybrid retrieve + rerank
+      → garbled check
+      → LLM Pass 1: answer with self-classification (DIRECT/ANALYTICAL/NOTFOUND)
+      → if NOTFOUND → Tavily web search
+      → if DIRECT/ANALYTICAL → LLM-as-judge quality gate
+          → judge says POOR → Tavily web search
+          → judge says GOOD → return answer
+      → cache result
+    """
     cache_key = hashlib.md5(query.strip().lower().encode()).hexdigest()
     if cache_key in answer_cache:
         cached = dict(answer_cache[cache_key])
@@ -408,7 +462,7 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         answer_type = "general"
 
     else:
-        # ── Normal path: answer from document context ─────────────────────────
+        # ── Pass 1: LLM answers with self-classification ──────────────────────
         prompt   = build_prompt(query, retrieved)
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -429,12 +483,24 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         raw = response.choices[0].message.content.strip()
         answer_type, answer = _parse_llm_response(raw)
 
-        # ── Web search fallback if LLM says not found ─────────────────────────
+        # ── NOTFOUND → web search immediately ────────────────────────────────
         if answer_type == "notfound":
             web_answer = web_search_fallback(query)
             if web_answer:
                 answer      = web_answer
                 answer_type = "web"
+
+        # ── Pass 2: LLM-as-judge quality gate ────────────────────────────────
+        # Only runs when Pass 1 produced a document-based answer (direct/analytical).
+        # If judge says POOR → escalate to Tavily, same as NOTFOUND.
+        # This catches cases where the document has partial/weak content
+        # (e.g. returning "RAG" for "What does RAG stand for?")
+        elif answer_type in ("direct", "analytical"):
+            if not _llm_judge(query, answer):
+                web_answer = web_search_fallback(query)
+                if web_answer:
+                    answer      = web_answer
+                    answer_type = "web"
 
     latency = round(time.time() - t0, 2)
 
