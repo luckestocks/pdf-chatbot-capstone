@@ -208,6 +208,7 @@ def _answer_says_not_found(answer: str) -> bool:
         "does not contain",
         "not contain a clear answer",
         "not mentioned",
+        "does not mention",
         "no information",
         "cannot find",
         "not provided",
@@ -218,6 +219,18 @@ def _answer_says_not_found(answer: str) -> bool:
         "not included in",
         "not covered in",
         "not directly addressed",
+        "no mention",
+        "not discussed",
+        "not found in",
+        "doesn't contain",
+        "doesn't mention",
+        "isn't mentioned",
+        "is not mentioned",
+        "context does not",
+        "provided context does not",
+        "not in the context",
+        "not part of",
+        "outside the scope",
     ]
     answer_lower = answer.lower()
     return any(p in answer_lower for p in phrases)
