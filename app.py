@@ -19,8 +19,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── API KEY ──────────────────────────────────────────────────────────────────
+# ─── API KEYS ─────────────────────────────────────────────────────────────────
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+TAVILY_API_KEY = st.secrets.get("TAVILY_API_KEY", os.environ.get("TAVILY_API_KEY", ""))
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
 # ─── Lazy imports (cached so they only install once per session) ──────────────
@@ -62,17 +63,15 @@ def clean_text(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-
 def extract_text_from_pdf(uploaded_file) -> tuple[str, int]:
     """Extract all text from an uploaded PDF. Returns (text, page_count)."""
     reader = PyPDF2.PdfReader(uploaded_file)
-    pages  = []
+    pages = []
     for page in reader.pages:
         text = page.extract_text()
         if text:
             pages.append(clean_text(text))
     return "\n\n".join(pages), len(reader.pages)
-
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:
     """Split text into overlapping chunks."""
@@ -83,11 +82,9 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str
         start += chunk_size - overlap
     return chunks
 
-
 def embed_chunks(chunks: list[str]) -> np.ndarray:
     """Generate embeddings for all chunks."""
     return embed_model.encode(chunks, show_progress_bar=False)
-
 
 def build_chromadb(chunks: list[str], embeddings: np.ndarray):
     """Create an in-memory ChromaDB collection from chunks + embeddings."""
@@ -100,27 +97,23 @@ def build_chromadb(chunks: list[str], embeddings: np.ndarray):
     )
     return collection
 
-
 def build_bm25(chunks: list[str]):
     """Build a BM25 index from chunks."""
     tokenised = [c.lower().split() for c in chunks]
     return BM25Okapi(tokenised)
 
-
 def retrieve_chunks(query: str, collection, embed_model, top_k: int = 6) -> list[dict]:
     """Semantic retrieval from ChromaDB."""
-    q_emb    = embed_model.encode([query]).tolist()
-    results  = collection.query(query_embeddings=q_emb, n_results=top_k)
-    docs     = results["documents"][0]
+    q_emb   = embed_model.encode([query]).tolist()
+    results = collection.query(query_embeddings=q_emb, n_results=top_k)
+    docs    = results["documents"][0]
     return [{"text": d, "source": "semantic"} for d in docs]
-
 
 def bm25_retrieve(query: str, bm25, chunks: list[str], top_k: int = 6) -> list[dict]:
     """BM25 keyword retrieval."""
     scores  = bm25.get_scores(query.lower().split())
     top_idx = np.argsort(scores)[::-1][:top_k]
     return [{"text": chunks[i], "bm25_score": float(scores[i]), "source": "bm25"} for i in top_idx]
-
 
 def hybrid_search(query: str, collection, bm25, chunks: list[str],
                   embed_model, top_k: int = 10) -> list[dict]:
@@ -135,7 +128,6 @@ def hybrid_search(query: str, collection, bm25, chunks: list[str],
             merged.append(item)
     return merged
 
-
 def full_hybrid_retrieve(query: str, collection, bm25, chunks: list[str],
                          embed_model, reranker, top_k: int = 5) -> list[dict]:
     """Hybrid search → CrossEncoder reranking → top_k results."""
@@ -146,7 +138,6 @@ def full_hybrid_retrieve(query: str, collection, bm25, chunks: list[str],
         c["rerank_score"] = float(scores[i])
     ranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
     return ranked[:top_k]
-
 
 def build_prompt(query: str, chunks: list[dict]) -> str:
     """Build the LLM prompt from retrieved chunks."""
@@ -165,7 +156,6 @@ CONTEXT:
 QUESTION: {query}
 
 ANSWER:"""
-
 
 # ── Hardcoded answers for questions the document cannot answer cleanly ────────
 HARDCODED_ANSWERS = {
@@ -187,7 +177,6 @@ def _get_hardcoded(query: str):
             return answer
     return None
 
-
 def _is_garbled(chunks: list[dict]) -> bool:
     """
     Return True only if chunks are BOTH heavily non-ASCII AND have deeply
@@ -196,7 +185,7 @@ def _is_garbled(chunks: list[dict]) -> bool:
     readable answers.
 
     FIX: Changed from (ratio > 0.02 OR score < 0.1) to
-                       (ratio > 0.15 AND score < -5.0)
+         (ratio > 0.15 AND score < -5.0)
     The old OR logic was too aggressive — a rerank score of -0.04 (which is
     actually decent) was incorrectly triggering the garbled fallback.
     """
@@ -208,7 +197,6 @@ def _is_garbled(chunks: list[dict]) -> bool:
     top_score = chunks[0].get("rerank_score", 1.0)
     # FIXED LINE — both conditions must be true, with much looser thresholds
     return ratio > 0.15 and top_score < -5.0
-
 
 def _answer_says_not_found(answer: str) -> bool:
     """Detect if the LLM answered that it could not find the information."""
@@ -234,86 +222,84 @@ def _answer_says_not_found(answer: str) -> bool:
     answer_lower = answer.lower()
     return any(p in answer_lower for p in phrases)
 
-
 def web_search_fallback(query: str) -> str:
-    """Search the web using DuckDuckGo and summarise results via Groq."""
+    """
+    Search the web using Tavily (built for AI/RAG apps) and summarise
+    results via Groq.  Falls back to LLM general knowledge if Tavily
+    is unavailable or returns no results.
+    """
     try:
-        from duckduckgo_search import DDGS
-        search_query = query.strip()
-        results = []
-        for attempt_query in [search_query, search_query + " explained", search_query + " tutorial"]:
-            try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(attempt_query, max_results=5, timeout=10))
-                if results:
-                    break
-            except Exception:
-                continue
+        from tavily import TavilyClient
 
-        if not results:
-            response = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[
-                    {"role": "system",
-                     "content": "You are a helpful assistant with broad knowledge. Answer clearly and concisely in 3-5 sentences."},
-                    {"role": "user", "content": query},
-                ],
-                temperature=0.0,
-                max_tokens=300,
-            )
-            answer = response.choices[0].message.content.strip()
-            answer += "\n\n---\n💡 **Answered from general knowledge** — not found in the uploaded document."
-            return answer
+        if not TAVILY_API_KEY:
+            raise ValueError("TAVILY_API_KEY not set")
+
+        client  = TavilyClient(api_key=TAVILY_API_KEY)
+        results = client.search(query=query, max_results=5)
+        hits    = results.get("results", [])
+
+        if not hits:
+            raise ValueError("Tavily returned no results")
 
         web_context = ""
-        sources = []
-        for i, r in enumerate(results[:5]):
-            title = r.get("title", "")
-            body  = r.get("body", "")
-            href  = r.get("href", "")
-            web_context += f"[Source {i+1}] {title}\n{body}\n\n"
-            if href:
-                sources.append(f"- {title}: {href}")
+        sources     = []
+        for i, r in enumerate(hits[:5]):
+            title   = r.get("title", "")
+            content = r.get("content", "")
+            url     = r.get("url", "")
+            web_context += f"[Source {i+1}] {title}\n{content}\n\n"
+            if url:
+                sources.append(f"- {title}: {url}")
 
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system",
-                 "content": (
-                    "You are a helpful assistant. "
-                    "Using only the web search results provided, answer the question clearly "
-                    "and concisely in 3-5 sentences. "
-                    "Do not invent facts beyond what the sources say."
-                 )},
-                {"role": "user",
-                 "content": f"Web search results:\n{web_context}\n\nQuestion: {query}\n\nAnswer:"},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful assistant. "
+                        "Using only the web search results provided, answer the question clearly "
+                        "and concisely in 3-5 sentences. "
+                        "Do not invent facts beyond what the sources say."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Web search results:\n{web_context}\n\nQuestion: {query}\n\nAnswer:",
+                },
             ],
             temperature=0.0,
             max_tokens=400,
         )
-        answer = response.choices[0].message.content.strip()
+
+        answer      = response.choices[0].message.content.strip()
         source_text = "\n".join(sources[:3])
-        answer += f"\n\n---\n🌐 **Answered from web search** — not found in the uploaded document.\n\n**Sources:**\n{source_text}"
+        answer += (
+            f"\n\n---\n🌐 **Answered from web search** — not found in the uploaded document."
+            f"\n\n**Sources:**\n{source_text}"
+        )
         return answer
 
-    except Exception as e:
+    except Exception:
+        # Final fallback: LLM general knowledge
         try:
             response = groq_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system",
-                     "content": "You are a helpful assistant. Answer clearly and concisely in 3-5 sentences using your general knowledge."},
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant. Answer clearly and concisely in 3-5 sentences using your general knowledge.",
+                    },
                     {"role": "user", "content": query},
                 ],
                 temperature=0.0,
                 max_tokens=300,
             )
-            answer = response.choices[0].message.content.strip()
+            answer  = response.choices[0].message.content.strip()
             answer += "\n\n---\n💡 **Answered from general knowledge** — not found in the uploaded document."
             return answer
         except Exception:
             return None
-
 
 def get_answer(query: str, collection, bm25, chunks: list[str],
                embed_model, reranker, answer_cache: dict) -> dict:
@@ -344,34 +330,39 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system",
-                 "content": (
-                    "You are a helpful assistant. Answer clearly and concisely "
-                    "in 2-4 sentences. Give a direct, accurate answer."
-                 )},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful assistant. Answer clearly and concisely "
+                        "in 2-4 sentences. Give a direct, accurate answer."
+                    ),
+                },
                 {"role": "user", "content": query},
             ],
             temperature=0.0,
             max_tokens=200,
         )
-        answer = response.choices[0].message.content.strip()
+        answer  = response.choices[0].message.content.strip()
         answer += "\n\n*(Note: answered from general knowledge — the relevant document section contained mathematical notation that could not be parsed.)*"
+
     else:
         # ── Normal path: answer from document context ─────────────────────────
-        prompt = build_prompt(query, retrieved)
+        prompt   = build_prompt(query, retrieved)
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system",
-                 "content": (
-                    "You are a strict document QA assistant. "
-                    "Answer only from the provided context chunks. "
-                    "Read ALL chunks carefully before answering — "
-                    "the answer may be spread across multiple chunks. "
-                    "If the answer is not present in any chunk, say so clearly. "
-                    "Never invent or assume facts. "
-                    "Keep your answer concise and direct."
-                 )},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict document QA assistant. "
+                        "Answer only from the provided context chunks. "
+                        "Read ALL chunks carefully before answering — "
+                        "the answer may be spread across multiple chunks. "
+                        "If the answer is not present in any chunk, say so clearly. "
+                        "Never invent or assume facts. "
+                        "Keep your answer concise and direct."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
@@ -379,14 +370,14 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         )
         answer = response.choices[0].message.content.strip()
 
-    # ── Web search fallback ───────────────────────────────────────────────────
-    if _answer_says_not_found(answer):
-        web_answer = web_search_fallback(query)
-        if web_answer:
-            answer = web_answer
+        # ── Web search fallback ───────────────────────────────────────────────
+        if _answer_says_not_found(answer):
+            web_answer = web_search_fallback(query)
+            if web_answer:
+                answer = web_answer
 
     latency = round(time.time() - t0, 2)
-    result = {
+    result  = {
         "answer":     answer,
         "chunks":     retrieved,
         "latency":    latency,
@@ -394,7 +385,6 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
     }
     answer_cache[cache_key] = result
     return result
-
 
 # ─── Session State Init ───────────────────────────────────────────────────────
 for key, default in {
@@ -411,7 +401,6 @@ for key, default in {
     if key not in st.session_state:
         st.session_state[key] = default
 
-
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("📄 PDF Chatbot")
@@ -427,50 +416,44 @@ with st.sidebar:
     if uploaded and (not st.session_state.pdf_loaded or uploaded.name != st.session_state.pdf_name):
         with st.spinner("📖 Extracting text…"):
             text, pages = extract_text_from_pdf(uploaded)
-
         with st.spinner("✂️ Chunking text…"):
             chunks = chunk_text(text)
-
         with st.spinner("🔢 Generating embeddings…"):
             embeddings = embed_chunks(chunks)
-
         with st.spinner("🗄️ Building vector store…"):
             collection = build_chromadb(chunks, embeddings)
-
         with st.spinner("🔍 Building BM25 index…"):
             bm25 = build_bm25(chunks)
 
-        st.session_state.chunks       = chunks
-        st.session_state.collection   = collection
-        st.session_state.bm25         = bm25
-        st.session_state.pdf_loaded   = True
-        st.session_state.pdf_name     = uploaded.name
-        st.session_state.page_count   = pages
-        st.session_state.chunk_count  = len(chunks)
-        st.session_state.messages     = []
+        st.session_state.chunks      = chunks
+        st.session_state.collection  = collection
+        st.session_state.bm25        = bm25
+        st.session_state.pdf_loaded  = True
+        st.session_state.pdf_name    = uploaded.name
+        st.session_state.page_count  = pages
+        st.session_state.chunk_count = len(chunks)
+        st.session_state.messages    = []
         st.session_state.answer_cache = {}
         st.success("✅ PDF ready!")
 
     if st.session_state.pdf_loaded:
         st.divider()
         st.markdown("**📊 Document Stats**")
-        st.metric("File",   st.session_state.pdf_name, delta=None)
-        st.metric("Pages",  st.session_state.page_count)
-        st.metric("Chunks", st.session_state.chunk_count)
+        st.metric("File",        st.session_state.pdf_name,  delta=None)
+        st.metric("Pages",       st.session_state.page_count)
+        st.metric("Chunks",      st.session_state.chunk_count)
         st.metric("Cached Q&As", len(st.session_state.answer_cache))
 
         st.divider()
         if st.button("🗑️ Clear chat history"):
             st.session_state.messages = []
             st.rerun()
-
         if st.button("♻️ Clear answer cache"):
             st.session_state.answer_cache = {}
             st.rerun()
 
     st.divider()
     st.caption("Stack: Groq · ChromaDB · BM25 · CrossEncoder · SentenceTransformers")
-
 
 # ─── Main Area ────────────────────────────────────────────────────────────────
 st.title("💬 PDF Chatbot")
@@ -483,14 +466,12 @@ if not st.session_state.pdf_loaded:
 for msg_idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-
         if msg["role"] == "assistant" and "meta" in msg:
             meta = msg["meta"]
             col1, col2, col3 = st.columns(3)
-            col1.metric("⏱️ Latency", f"{meta['latency']}s")
+            col1.metric("⏱️ Latency",    f"{meta['latency']}s")
             col2.metric("📦 Chunks used", meta["chunk_count"])
-            col3.metric("⚡ Cache hit", "Yes" if meta["from_cache"] else "No")
-
+            col3.metric("⚡ Cache hit",   "Yes" if meta["from_cache"] else "No")
             with st.expander("🔍 Retrieved source chunks"):
                 for i, chunk in enumerate(meta["chunks"]):
                     score = chunk.get("rerank_score", chunk.get("confidence", 0.0))
@@ -527,7 +508,6 @@ if prompt := st.chat_input("Ask a question about your PDF…"):
             )
 
         st.markdown(result["answer"])
-
         col1, col2, col3 = st.columns(3)
         col1.metric("⏱️ Latency",    f"{result['latency']}s")
         col2.metric("📦 Chunks used", len(result["chunks"]))
