@@ -188,6 +188,86 @@ def _parse_llm_response(raw: str) -> tuple[str, str]:
 
 
 def web_search_fallback(query: str) -> str:
+    """
+    Search the web using Tavily (built for AI/RAG apps) and summarise
+    results via Groq.  Falls back to LLM general knowledge if Tavily
+    is unavailable or returns no results.
+    """
+    try:
+        from tavily import TavilyClient
+
+        if not TAVILY_API_KEY:
+            raise ValueError("TAVILY_API_KEY not set")
+
+        client  = TavilyClient(api_key=TAVILY_API_KEY)
+        results = client.search(query=query, max_results=5)
+        hits    = results.get("results", [])
+
+        if not hits:
+            raise ValueError("Tavily returned no results")
+
+        web_context = ""
+        sources     = []
+        for i, r in enumerate(hits[:5]):
+            title   = r.get("title", "")
+            content = r.get("content", "")
+            url     = r.get("url", "")
+            web_context += f"[Source {i+1}] {title}\n{content}\n\n"
+            if url:
+                sources.append(f"- {title}: {url}")
+
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful assistant. "
+                        "Using the web search results provided, write a clean, well-synthesised answer "
+                        "in 3-5 sentences. "
+                        "Do NOT say 'Source 1 says', 'According to Source 2', or reference sources by number. "
+                        "Just write the answer directly as a single coherent paragraph. "
+                        "Do not invent facts beyond what the sources say."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Web search results:\n{web_context}\n\nQuestion: {query}\n\nAnswer:",
+                },
+            ],
+            temperature=0.0,
+            max_tokens=400,
+        )
+
+        answer      = response.choices[0].message.content.strip()
+        source_text = "\n".join(sources[:3])
+        answer += (
+            f"\n\n---\n🌐 **Answered from web search** — not found in the uploaded document."
+            f"\n\n**Sources:**\n{source_text}"
+        )
+        return answer
+
+    except Exception:
+        # Final fallback: LLM general knowledge
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant. Answer clearly and concisely in 3-5 sentences using your general knowledge.",
+                    },
+                    {"role": "user", "content": query},
+                ],
+                temperature=0.0,
+                max_tokens=300,
+            )
+            answer  = response.choices[0].message.content.strip()
+            answer += "\n\n---\n💡 **Answered from general knowledge** — not found in the uploaded document."
+            return answer
+        except Exception:
+            return None
+
 
 # ── Hardcoded answers for questions the document cannot answer cleanly ────────
 HARDCODED_ANSWERS = {
