@@ -443,6 +443,7 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
     if cache_key in answer_cache:
         cached = dict(answer_cache[cache_key])
         cached["from_cache"] = True
+        cached["latency"]    = 0.0   # cache hits are instant — don't show original latency
         return cached
 
     t0        = time.time()
