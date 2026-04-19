@@ -19,16 +19,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── API KEY — Replace this string with your actual Groq key ─────────────────
-# ⚠️  TO USE st.secrets INSTEAD (recommended for production):
-#     1. In Streamlit Cloud → App Settings → Secrets, add:
-#           GROQ_API_KEY = "gsk_your_key_here"
-#     2. Change the line below to:
-#           GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+# ─── API KEY ──────────────────────────────────────────────────────────────────
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-os.environ["GROQ_API_KEY"] = GROQ_API_KEY
-# ─────────────────────────────────────────────────────────────────────────────
-
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
 # ─── Lazy imports (cached so they only install once per session) ──────────────
@@ -63,15 +55,10 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 def clean_text(text: str) -> str:
     """Remove garbled unicode, math symbols, and noise from PDF text."""
     import re
-    # Replace common garbled characters and math symbols
     text = text.encode("utf-8", errors="ignore").decode("utf-8")
-    # Remove non-printable / control characters
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    # Remove isolated unicode math/symbol characters (not regular letters/numbers)
     text = re.sub(r'[^\x20-\x7E\n\t]', ' ', text)
-    # Collapse multiple spaces
     text = re.sub(r' {2,}', ' ', text)
-    # Collapse 3+ newlines into 2
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -130,15 +117,14 @@ def retrieve_chunks(query: str, collection, embed_model, top_k: int = 6) -> list
 
 def bm25_retrieve(query: str, bm25, chunks: list[str], top_k: int = 6) -> list[dict]:
     """BM25 keyword retrieval."""
-    scores = bm25.get_scores(query.lower().split())
+    scores  = bm25.get_scores(query.lower().split())
     top_idx = np.argsort(scores)[::-1][:top_k]
     return [{"text": chunks[i], "bm25_score": float(scores[i]), "source": "bm25"} for i in top_idx]
 
 
 def hybrid_search(query: str, collection, bm25, chunks: list[str],
                   embed_model, top_k: int = 10) -> list[dict]:
-    """Merge semantic + BM25 results (deduped by text).
-    Larger candidate pool = better chance of finding the right chunk."""
+    """Merge semantic + BM25 results (deduped by text)."""
     semantic = retrieve_chunks(query, collection, embed_model, top_k)
     keyword  = bm25_retrieve(query, bm25, chunks, top_k)
     seen, merged = set(), []
@@ -152,8 +138,7 @@ def hybrid_search(query: str, collection, bm25, chunks: list[str],
 
 def full_hybrid_retrieve(query: str, collection, bm25, chunks: list[str],
                          embed_model, reranker, top_k: int = 5) -> list[dict]:
-    """Hybrid search → CrossEncoder reranking → top_k results.
-    Pulls 10+10 candidates, reranks all, returns best 5."""
+    """Hybrid search → CrossEncoder reranking → top_k results."""
     candidates = hybrid_search(query, collection, bm25, chunks, embed_model, top_k=10)
     pairs      = [[query, c["text"]] for c in candidates]
     scores     = reranker.predict(pairs)
@@ -182,10 +167,7 @@ QUESTION: {query}
 ANSWER:"""
 
 
-# ── Hardcoded answers for questions the document cannot answer cleanly ───────
-# The RAG paper uses heavy math notation — basic definitional questions
-# hit garbled chunks. These answers are factually correct and grounded
-# in the paper's own title and abstract.
+# ── Hardcoded answers for questions the document cannot answer cleanly ────────
 HARDCODED_ANSWERS = {
     "what does rag stand for": "RAG stands for **Retrieval-Augmented Generation**. It is a method that combines a retrieval component (which fetches relevant documents) with a generative language model (which produces the final answer), allowing the model to access external knowledge rather than relying solely on parameters.",
     "what is rag": "RAG (Retrieval-Augmented Generation) is an AI approach that enhances language model generation by retrieving relevant documents at inference time and conditioning the generator on those documents alongside the input query.",
@@ -207,16 +189,25 @@ def _get_hardcoded(query: str):
 
 
 def _is_garbled(chunks: list[dict]) -> bool:
-    """Return True if the top chunk is mostly garbled/math content."""
+    """
+    Return True only if chunks are BOTH heavily non-ASCII AND have deeply
+    negative rerank scores. This prevents false positives on academic PDFs
+    (like the RAG paper) that have some math notation but still contain
+    readable answers.
+
+    FIX: Changed from (ratio > 0.02 OR score < 0.1) to
+                       (ratio > 0.15 AND score < -5.0)
+    The old OR logic was too aggressive — a rerank score of -0.04 (which is
+    actually decent) was incorrectly triggering the garbled fallback.
+    """
     if not chunks:
         return True
-    top_text = chunks[0].get("text", "")
-    # Count non-ASCII characters (math symbols, etc.)
+    top_text  = chunks[0].get("text", "")
     non_ascii = sum(1 for c in top_text if ord(c) > 127)
-    ratio = non_ascii / max(len(top_text), 1)
-    # Also check if top rerank score is very low (poor retrieval)
+    ratio     = non_ascii / max(len(top_text), 1)
     top_score = chunks[0].get("rerank_score", 1.0)
-    return ratio > 0.02 or top_score < 0.1
+    # FIXED LINE — both conditions must be true, with much looser thresholds
+    return ratio > 0.15 and top_score < -5.0
 
 
 def _answer_says_not_found(answer: str) -> bool:
@@ -250,7 +241,6 @@ def web_search_fallback(query: str) -> str:
         from duckduckgo_search import DDGS
         search_query = query.strip()
         results = []
-        # Try multiple times with slightly different queries if needed
         for attempt_query in [search_query, search_query + " explained", search_query + " tutorial"]:
             try:
                 with DDGS() as ddgs:
@@ -261,7 +251,6 @@ def web_search_fallback(query: str) -> str:
                 continue
 
         if not results:
-            # No results from DuckDuckGo — use Groq general knowledge directly
             response = groq_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
@@ -276,7 +265,6 @@ def web_search_fallback(query: str) -> str:
             answer += "\n\n---\n💡 **Answered from general knowledge** — not found in the uploaded document."
             return answer
 
-        # Build context from search results
         web_context = ""
         sources = []
         for i, r in enumerate(results[:5]):
@@ -287,7 +275,6 @@ def web_search_fallback(query: str) -> str:
             if href:
                 sources.append(f"- {title}: {href}")
 
-        # Ask Groq to summarise the web results
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
@@ -310,7 +297,6 @@ def web_search_fallback(query: str) -> str:
         return answer
 
     except Exception as e:
-        # Last resort — use Groq general knowledge with no web context
         try:
             response = groq_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
@@ -334,7 +320,6 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
     """Full pipeline: cache check → hybrid retrieve → rerank → LLM answer."""
     cache_key = hashlib.md5(query.strip().lower().encode()).hexdigest()
     if cache_key in answer_cache:
-        # Return a copy so we don't mutate the stored dict
         cached = dict(answer_cache[cache_key])
         cached["from_cache"] = True
         return cached
@@ -350,12 +335,11 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         }
         answer_cache[cache_key] = result
         return result
-    # ─────────────────────────────────────────────────────────────────────────
 
     t0        = time.time()
     retrieved = full_hybrid_retrieve(query, collection, bm25, chunks, embed_model, reranker)
 
-    # ── Garbled chunk detection: skip document context if chunks are unusable ─
+    # ── Garbled chunk detection ───────────────────────────────────────────────
     if _is_garbled(retrieved):
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -396,7 +380,6 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         answer = response.choices[0].message.content.strip()
 
     # ── Web search fallback ───────────────────────────────────────────────────
-    # If the document didn't contain a good answer, search the web instead
     if _answer_says_not_found(answer):
         web_answer = web_search_fallback(query)
         if web_answer:
@@ -527,12 +510,10 @@ for msg_idx, msg in enumerate(st.session_state.messages):
 
 # Chat input
 if prompt := st.chat_input("Ask a question about your PDF…"):
-    # Display user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Generate answer
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             result = get_answer(
@@ -569,7 +550,6 @@ if prompt := st.chat_input("Ask a question about your PDF…"):
                     disabled=True,
                 )
 
-    # Store in history
     st.session_state.messages.append({
         "role":    "assistant",
         "content": result["answer"],
