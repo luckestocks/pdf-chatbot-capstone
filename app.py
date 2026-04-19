@@ -147,16 +147,19 @@ def build_prompt(query: str, chunks: list[dict]) -> str:
 Read ALL context passages carefully before answering.
 
 Your response MUST start with exactly one of these prefixes on its own line:
-  DIRECT:     — the answer came clearly from one passage
-  ANALYTICAL: — the answer required combining information across multiple passages
-  NOTFOUND:   — the answer is not present in any passage
+  DIRECT:     — one passage clearly and specifically answers the question
+  ANALYTICAL: — the specific answer requires combining information across multiple passages
+  NOTFOUND:   — the passages do not specifically answer the question asked.
+                Use this even if the passages contain content on a related topic.
+                Example: if asked about "data migration objects" but the document only
+                lists "key components", that is NOTFOUND — not the same thing.
 
 Then on the next line, write your answer.
 
 Rules:
 - Answer only from the provided context. Never invent facts.
 - Do not reference passage numbers or say "according to passage X".
-- If using NOTFOUND, briefly state what is missing.
+- If using NOTFOUND, write one sentence explaining what the document covers instead.
 - Be thorough — if the answer spans multiple passages, include all relevant details.
 
 CONTEXT:
