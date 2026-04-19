@@ -140,24 +140,54 @@ def full_hybrid_retrieve(query: str, collection, bm25, chunks: list[str],
     return ranked[:top_k]
 
 def build_prompt(query: str, chunks: list[dict]) -> str:
-    """Build the LLM prompt from retrieved chunks.
-    NOTE: Chunk labels intentionally removed — they caused the LLM to say
-    'According to Chunk 3...' in answers, which looks unprofessional.
-    The LLM should synthesise across all passages and answer directly.
-    """
+    """Build the LLM prompt. LLM is asked to self-classify its answer mode."""
     context_parts = [c["text"] for c in chunks]
     context = "\n\n---\n\n".join(context_parts)
-    return f"""Use the context passages below to answer the question.
-Read all passages carefully before answering.
-Write a clear, direct answer in your own words — do not reference passage numbers or say 'according to passage X'.
-If the answer is not present in any passage, say so clearly.
+    return f"""You are a strict document QA assistant.
+Read ALL context passages carefully before answering.
+
+Your response MUST start with exactly one of these prefixes on its own line:
+  DIRECT:     — the answer came clearly from one passage
+  ANALYTICAL: — the answer required combining information across multiple passages
+  NOTFOUND:   — the answer is not present in any passage
+
+Then on the next line, write your answer.
+
+Rules:
+- Answer only from the provided context. Never invent facts.
+- Do not reference passage numbers or say "according to passage X".
+- If using NOTFOUND, briefly state what is missing.
+- Be thorough — if the answer spans multiple passages, include all relevant details.
 
 CONTEXT:
 {context}
 
 QUESTION: {query}
 
-ANSWER:"""
+RESPONSE:"""
+
+
+def _parse_llm_response(raw: str) -> tuple[str, str]:
+    """
+    Parse the LLM's prefixed response.
+    Returns (answer_type, clean_answer).
+    answer_type is one of: 'direct', 'analytical', 'notfound'
+    Falls back to 'direct' if prefix is missing or unrecognised.
+    """
+    raw = raw.strip()
+    for prefix, atype in [
+        ("DIRECT:",     "direct"),
+        ("ANALYTICAL:", "analytical"),
+        ("NOTFOUND:",   "notfound"),
+    ]:
+        if raw.upper().startswith(prefix):
+            clean = raw[len(prefix):].strip()
+            return atype, clean
+    # No recognised prefix — treat as direct, return as-is
+    return "direct", raw
+
+
+def web_search_fallback(query: str) -> str:
 
 # ── Hardcoded answers for questions the document cannot answer cleanly ────────
 HARDCODED_ANSWERS = {
@@ -199,67 +229,6 @@ def _is_garbled(chunks: list[dict]) -> bool:
     top_score = chunks[0].get("rerank_score", 1.0)
     # FIXED LINE — both conditions must be true, with much looser thresholds
     return ratio > 0.15 and top_score < -5.0
-
-def _answer_says_not_found(answer: str) -> bool:
-    """Detect if the LLM answered that it could not find the information."""
-    phrases = [
-        "could not find",
-        "not find that information",
-        "not present in",
-        "not explicitly",
-        "does not contain",
-        "not contain a clear answer",
-        "not mentioned",
-        "does not mention",
-        "no information",
-        "cannot find",
-        "not provided",
-        "not available in",
-        "does not provide",
-        "no clear answer",
-        "unable to find",
-        "not included in",
-        "not covered in",
-        "not directly addressed",
-        "no mention",
-        "not discussed",
-        "not found in",
-        "doesn't contain",
-        "doesn't mention",
-        "isn't mentioned",
-        "is not mentioned",
-        "context does not",
-        "provided context does not",
-        "not in the context",
-        "not part of",
-        "outside the scope",
-    ]
-    answer_lower = answer.lower()
-    return any(p in answer_lower for p in phrases)
-
-def _classify_answer_type(chunks: list[dict]) -> str:
-    """
-    Classify whether the answer was pulled directly from one passage
-    or synthesised across multiple passages.
-
-    Logic:
-      - If the top chunk score is at least 1.5x higher than the average
-        of the remaining chunks → the answer likely came from one place → DIRECT
-      - Otherwise the LLM had to reason across several passages → ANALYTICAL
-
-    Returns one of: "direct" | "analytical" | "web" | "cached" | "hardcoded"
-    (web/cached/hardcoded are set by get_answer, not here)
-    """
-    if not chunks or len(chunks) < 2:
-        return "direct"
-    scores = [c.get("rerank_score", 0.0) for c in chunks]
-    top    = scores[0]
-    rest   = scores[1:]
-    avg_rest = sum(rest) / len(rest) if rest else 0.0
-    # If top score is significantly higher than the rest → direct
-    if top > 0 and avg_rest >= 0 and top >= avg_rest * 1.5:
-        return "direct"
-    return "analytical"
 
 def web_search_fallback(query: str) -> str:
     """
@@ -384,8 +353,9 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
             temperature=0.0,
             max_tokens=200,
         )
-        answer  = response.choices[0].message.content.strip()
-        answer += "\n\n*(Note: answered from general knowledge — the relevant document section contained mathematical notation that could not be parsed.)*"
+        answer      = response.choices[0].message.content.strip()
+        answer     += "\n\n*(Note: answered from general knowledge — the relevant document section contained mathematical notation that could not be parsed.)*"
+        answer_type = "general"
 
     else:
         # ── Normal path: answer from document context ─────────────────────────
@@ -397,36 +367,26 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
                     "role": "system",
                     "content": (
                         "You are a strict document QA assistant. "
-                        "Answer only from the provided context chunks. "
-                        "Read ALL chunks carefully before answering — "
-                        "the answer may be spread across multiple chunks. "
-                        "If the answer is not present in any chunk, say so clearly. "
-                        "Never invent or assume facts. "
-                        "Keep your answer concise and direct."
+                        "Always begin your response with DIRECT:, ANALYTICAL:, or NOTFOUND: "
+                        "as instructed in the user prompt. Never skip this prefix."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=400,
         )
-        answer = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
+        answer_type, answer = _parse_llm_response(raw)
 
-        # ── Web search fallback ───────────────────────────────────────────────
-        if _answer_says_not_found(answer):
+        # ── Web search fallback if LLM says not found ─────────────────────────
+        if answer_type == "notfound":
             web_answer = web_search_fallback(query)
             if web_answer:
-                answer = web_answer
+                answer      = web_answer
+                answer_type = "web"
 
     latency = round(time.time() - t0, 2)
-
-    # ── Classify answer type for UI badge ────────────────────────────────────
-    if "🌐" in answer:
-        answer_type = "web"
-    elif "💡" in answer:
-        answer_type = "general"
-    else:
-        answer_type = _classify_answer_type(retrieved)
 
     result  = {
         "answer":      answer,
