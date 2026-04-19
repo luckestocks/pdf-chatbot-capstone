@@ -272,26 +272,6 @@ def web_search_fallback(query: str) -> str:
             return None
 
 
-# ── Hardcoded answers for questions the document cannot answer cleanly ────────
-HARDCODED_ANSWERS = {
-    "what does rag stand for": "RAG stands for **Retrieval-Augmented Generation**. It is a method that combines a retrieval component (which fetches relevant documents) with a generative language model (which produces the final answer), allowing the model to access external knowledge rather than relying solely on parameters.",
-    "what is rag": "RAG (Retrieval-Augmented Generation) is an AI approach that enhances language model generation by retrieving relevant documents at inference time and conditioning the generator on those documents alongside the input query.",
-    "what does retrieval augmented generation mean": "Retrieval-Augmented Generation (RAG) means augmenting a generative language model with a retrieval mechanism that fetches relevant passages from an external knowledge source, improving factual accuracy and reducing hallucination.",
-    "what is the generator model used in rag": "The generator in RAG is BART-large (bart-large), a pre-trained seq2seq transformer model. It takes the input query concatenated with retrieved document passages and generates the final answer.",
-    "what generator does rag use": "RAG uses BART-large as its generator — a pre-trained sequence-to-sequence transformer with an encoder-decoder architecture that produces answers conditioned on both the query and retrieved passages.",
-    "what is bart": "BART (Bidirectional and Auto-Regressive Transformers) is a pre-trained sequence-to-sequence model used as the generator in RAG. It uses an encoder-decoder architecture and was pre-trained using a denoising objective.",
-    "what retriever does rag use": "RAG uses a Dense Passage Retriever (DPR) as its retrieval component. DPR uses a bi-encoder architecture with BERT-based models to encode queries and passages into dense vectors for similarity search.",
-    "what is dpr": "DPR stands for Dense Passage Retriever. It is the retrieval component of RAG that encodes queries and Wikipedia passages into dense vectors and retrieves the most relevant passages using maximum inner product search.",
-}
-
-def _get_hardcoded(query: str):
-    """Return a hardcoded answer if the query matches a known difficult question."""
-    q = query.strip().lower().rstrip("?").strip()
-    for key, answer in HARDCODED_ANSWERS.items():
-        if q == key or q in key or key in q:
-            return answer
-    return None
-
 def _is_garbled(chunks: list[dict]) -> bool:
     """
     Return True only if chunks are BOTH heavily non-ASCII AND have deeply
@@ -403,19 +383,6 @@ def get_answer(query: str, collection, bm25, chunks: list[str],
         cached["from_cache"] = True
         return cached
 
-    # ── Hardcoded answer check ────────────────────────────────────────────────
-    hardcoded = _get_hardcoded(query)
-    if hardcoded:
-        result = {
-            "answer":      hardcoded,
-            "chunks":      [],
-            "latency":     0.0,
-            "from_cache":  False,
-            "answer_type": "hardcoded",
-        }
-        answer_cache[cache_key] = result
-        return result
-
     t0        = time.time()
     retrieved = full_hybrid_retrieve(query, collection, bm25, chunks, embed_model, reranker)
 
@@ -489,7 +456,6 @@ def _answer_type_badge(answer_type: str) -> str:
         "analytical": "🧩 **Synthesised across multiple passages**",
         "web":        "🌐 **Answered from web search**",
         "general":    "💡 **Answered from general knowledge**",
-        "hardcoded":  "⚡ **Known definition — answered instantly**",
         "cached":     "⚡ **Returned from cache**",
     }
     return badges.get(answer_type, "")
